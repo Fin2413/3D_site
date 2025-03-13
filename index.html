@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Model Viewer</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { width: 100%; height: 100vh; }
+        #upload { position: absolute; top: 10px; left: 10px; }
+        #reset { position: absolute; top: 40px; left: 10px; }
+    </style>
+</head>
+<body>
+    <input type="file" id="upload" multiple accept=".obj,.mtl,.png,.glb">
+    <button id="reset">Сбросить вид</button>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.134.0/examples/js/loaders/OBJLoader.js"></script>
+    <script src="https://unpkg.com/three@0.134.0/examples/js/loaders/MTLLoader.js"></script>
+    <script src="https://unpkg.com/three@0.134.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://unpkg.com/three@0.134.0/examples/js/controls/OrbitControls.js"></script>
+    <script>
+        // Настройка сцены
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0xffffff, 1);
+        document.body.appendChild(renderer.domElement);
+
+        // Освещение
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 2);
+        directionalLight.position.set(5, 5, 5);
+        scene.add(directionalLight);
+        scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+
+        // Управление
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        // Камера по умолчанию
+        camera.position.z = 5;
+
+        // Загрузчики
+        const objLoader = new THREE.OBJLoader();
+        const mtlLoader = new THREE.MTLLoader();
+        const gltfLoader = new THREE.GLTFLoader();
+        const textureLoader = new THREE.TextureLoader();
+        let currentModel = null;
+
+        const uploadInput = document.getElementById('upload');
+        uploadInput.addEventListener('change', (event) => {
+            event.preventDefault();
+            const files = event.target.files;
+            if (!files.length) return;
+
+            let objFile = null;
+            let mtlFile = null;
+            let glbFile = null;
+            const textures = {};
+
+            // Разделяем файлы
+            for (const file of files) {
+                console.log('Файл:', file.name);
+                if (file.name.endsWith('.obj')) objFile = file;
+                else if (file.name.endsWith('.mtl')) mtlFile = file;
+                else if (file.name.endsWith('.glb')) glbFile = file;
+                else if (file.name.endsWith('.png')) textures[file.name.toLowerCase()] = URL.createObjectURL(file);
+            }
+
+            if (currentModel) {
+                scene.remove(currentModel);
+            }
+
+            // Загрузка .glb
+            if (glbFile) {
+                gltfLoader.load(
+                    URL.createObjectURL(glbFile),
+                    (gltf) => {
+                        console.log('Модель .glb загружена:', gltf);
+                        currentModel = gltf.scene;
+                        scene.add(currentModel);
+
+                        // Центрируем модель
+                        const box = new THREE.Box3().setFromObject(currentModel);
+                        const center = box.getCenter(new THREE.Vector3());
+                        currentModel.position.sub(center);
+
+                        animate();
+                    },
+                    (progress) => console.log('Загрузка .glb:', (progress.loaded / progress.total) * 100 + '%'),
+                    (error) => console.error('Ошибка загрузки .glb:', error)
+                );
+            }
+            // Загрузка .obj
+            else if (objFile) {
+                const loadObjModel = (materials) => {
+                    if (materials) objLoader.setMaterials(materials);
+                    objLoader.load(
+                        URL.createObjectURL(objFile),
+                        (obj) => {
+                            console.log('Модель .obj загружена:', obj);
+                            currentModel = obj;
+                            scene.add(currentModel);
+
+                            // Центрируем модель
+                            const box = new THREE.Box3().setFromObject(currentModel);
+                            const center = box.getCenter(new THREE.Vector3());
+                            currentModel.position.sub(center);
+
+                            // Проверяем материалы после загрузки
+                            currentModel.traverse((child) => {
+                                if (child.isMesh && child.material) {
+                                    console.log('Применённый материал:', child.material.name, child.material);
+                                }
+                            });
+
+                            animate();
+                        },
+                        (progress) => console.log('Загрузка .obj:', (progress.loaded / progress.total) * 100 + '%'),
+                        (error) => console.error('Ошибка загрузки .obj:', error)
+                    );
+                };
+
+                if (mtlFile) {
+                    // Читаем .mtl как текст для отладки
+                    const mtlReader = new FileReader();
+                    mtlReader.onload = (e) => {
+                        console.log('Содержимое .mtl:', e.target.result);
+
+                        mtlLoader.load(
+                            URL.createObjectURL(mtlFile),
+                            (mtl) => {
+                                mtl.preload();
+                                // Подменяем пути к текстурам
+                                for (const material of Object.values(mtl.materials)) {
+                                    if (material.map) {
+                                        let textureName = material.map.name || material.map.image?.src.split('/').pop();
+                                        textureName = textureName ? textureName.toLowerCase() : '';
+                                        console.log('Ожидаемая текстура в .mtl:', textureName);
+                                        if (textures[textureName]) {
+                                            material.map = textureLoader.load(textures[textureName]);
+                                            console.log('Текстура подгружена:', textureName);
+                                        } else {
+                                            console.warn('Текстура не найдена среди загруженных:', textureName);
+                                            console.log('Доступные текстуры:', Object.keys(textures));
+                                        }
+                                    }
+                                }
+                                console.log('Материалы .mtl загружены:', mtl);
+                                loadObjModel(mtl);
+                            },
+                            undefined,
+                            (error) => console.error('Ошибка загрузки .mtl:', error)
+                        );
+                    };
+                    mtlReader.readAsText(mtlFile);
+                } else {
+                    loadObjModel(null); // Без .mtl
+                }
+            }
+        });
+
+        // Кнопка сброса
+        document.getElementById('reset').addEventListener('click', () => {
+            camera.position.set(0, 0, 5);
+            controls.target.set(0, 0, 0);
+            if (currentModel) {
+                currentModel.position.set(0, 0, 0);
+            }
+            controls.update();
+        });
+
+        // Анимация
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // Адаптация под размер окна
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
